@@ -56,7 +56,13 @@
 //  █ █ █▀▀ █▀▀ █▀▄   █▀▀ █▀█ █▀▄ █▀▀   █▀▄ █▀▀ █▀▀ ▀█▀ █▀█
 //  █ █ ▀▀█ █▀▀ █▀▄   █   █ █ █ █ █▀▀   █▀▄ █▀▀ █ █  █  █ █
 //  ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀   ▀▀▀ ▀▀▀ ▀▀  ▀▀▀   ▀▀  ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀
+#include <TinyGPS++.h>
+#include <axp20x.h>
+#include <CayenneLPP.h>
 
+TinyGPSPlus gps;
+HardwareSerial GPS(1);
+// AXP20X_Class axp;
 
 const uint8_t payloadBufferLength = 4;    // Adjust to fit max payload length
 
@@ -706,6 +712,33 @@ void resetCounter()
     counter_ = 0;
 }
 
+static void smartDelay(unsigned long ms)
+{
+  unsigned long start = millis();
+  do
+  {
+    while (GPS.available())
+      gps.encode(GPS.read());
+  } while (millis() - start < ms);
+}
+
+void getDeviceLocation(float locationData[]){
+    locationData[0] = gps.location.lat();
+    locationData[1] = gps.location.lng();
+    smartDelay(1000);
+
+    
+    serial.println("GPS Data:");
+    serial.print("Latitude  : ");
+    serial.println(locationData[0]);
+    serial.print("Longitude : ");
+    serial.println(locationData[1]);
+    if (millis() > 5000 && gps.charsProcessed() < 10){
+        serial.println(F("No GPS data received: check wiring"));
+    }
+}
+
+
 
 void processWork(ostime_t doWorkJobTimeStamp)
 {
@@ -728,7 +761,9 @@ void processWork(ostime_t doWorkJobTimeStamp)
 
         uint16_t counterValue = getCounterValue();
         ostime_t timestamp = os_getTime();
-
+        float locationData[2];
+        getDeviceLocation(locationData);
+        
         #ifdef USE_DISPLAY
             // Interval and Counter values are combined on a single row.
             // This allows to keep the 3rd row empty which makes the
@@ -764,6 +799,7 @@ void processWork(ostime_t doWorkJobTimeStamp)
         }
         else
         {
+            //USE CAYENNELPP INSTEAD
             // Prepare uplink payload.
             uint8_t fPort = 10;
             payloadBuffer[0] = counterValue >> 8;
@@ -847,6 +883,20 @@ void setup()
 
     // Place code for initializing sensors etc. here.
 
+    //GPS Init----------------------------------------
+    Wire.begin(21, 22);
+    if (!axp.begin(Wire, AXP192_SLAVE_ADDRESS)) {
+        serial.println("AXP192 Begin PASS");
+    } else {
+        serial.println("AXP192 Begin FAIL");
+    }
+    axp.setPowerOutPut(AXP192_LDO2, AXP202_ON);
+    axp.setPowerOutPut(AXP192_LDO3, AXP202_ON);
+    axp.setPowerOutPut(AXP192_DCDC2, AXP202_ON);
+    axp.setPowerOutPut(AXP192_EXTEN, AXP202_ON);
+    axp.setPowerOutPut(AXP192_DCDC1, AXP202_ON);
+    GPS.begin(9600, SERIAL_8N1, 34, 12);   //17-TX 18-RX
+    //---------------------------------------------------
     resetCounter();
 
 //  █ █ █▀▀ █▀▀ █▀▄   █▀▀ █▀█ █▀▄ █▀▀   █▀▀ █▀█ █▀▄
