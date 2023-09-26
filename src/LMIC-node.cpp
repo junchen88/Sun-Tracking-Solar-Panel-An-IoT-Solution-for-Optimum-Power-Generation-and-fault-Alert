@@ -60,11 +60,24 @@
 #include <axp20x.h>
 #include <CayenneLPP.h>
 
+
+//GPS--------------------
 TinyGPSPlus gps;
 HardwareSerial GPS(1);
 // AXP20X_Class axp;
+#ifdef USE_HARD_CODE_GPS
+    float locationData[] = {-31.9811, 115.8181, 0};
+#else
+    float locationData[2];
+#endif
+//------------------------
 
-const uint8_t payloadBufferLength = 4;    // Adjust to fit max payload length
+bool isNewDay = true;
+bool hasGPSReceivedData = false;
+
+const uint8_t payloadBufferLength = 45;    // Adjust to fit max payload length
+
+CayenneLPP dataCayennePayload(payloadBufferLength);
 
 
 //  █ █ █▀▀ █▀▀ █▀▄   █▀▀ █▀█ █▀▄ █▀▀   █▀▀ █▀█ █▀▄
@@ -723,19 +736,33 @@ static void smartDelay(unsigned long ms)
 }
 
 void getDeviceLocation(float locationData[]){
-    locationData[0] = gps.location.lat();
-    locationData[1] = gps.location.lng();
-    smartDelay(1000);
+    
+    if(!hasGPSReceivedData){
+        locationData[0] = gps.location.lat();
+        locationData[1] = gps.location.lng();
+        smartDelay(1000);
+
+        
+        serial.print("GPS Data:");
+        serial.print("Latitude  : ");
+        serial.println(locationData[0]);
+        serial.print("Longitude : ");
+        serial.println(locationData[1]);
+        if (millis() > 5000 && gps.charsProcessed() < 10){
+            serial.println(F("No GPS data received: check wiring"));
+        }
+        
+        //compare value, if it is 0,0 - then there is no gps signal most likely (unless your location is 0,0)
+        if(abs(locationData[0]-0 < 1e-9) && abs(locationData[1]-0 < 1e-9)){
+            hasGPSReceivedData = false;
+        }
+        else{
+            hasGPSReceivedData = true;
+        }
+
+    }
 
     
-    serial.println("GPS Data:");
-    serial.print("Latitude  : ");
-    serial.println(locationData[0]);
-    serial.print("Longitude : ");
-    serial.println(locationData[1]);
-    if (millis() > 5000 && gps.charsProcessed() < 10){
-        serial.println(F("No GPS data received: check wiring"));
-    }
 }
 
 
@@ -761,8 +788,7 @@ void processWork(ostime_t doWorkJobTimeStamp)
 
         uint16_t counterValue = getCounterValue();
         ostime_t timestamp = os_getTime();
-        float locationData[2];
-        getDeviceLocation(locationData);
+        // getDeviceLocation(locationData);
         
         #ifdef USE_DISPLAY
             // Interval and Counter values are combined on a single row.
@@ -800,13 +826,15 @@ void processWork(ostime_t doWorkJobTimeStamp)
         else
         {
             //USE CAYENNELPP INSTEAD
+
             // Prepare uplink payload.
             uint8_t fPort = 10;
             payloadBuffer[0] = counterValue >> 8;
             payloadBuffer[1] = counterValue & 0xFF;
-            uint8_t payloadLength = 2;
+            uint8_t payloadLength = dataCayennePayload.getSize();
+            uint8_t *dataBuffer = dataCayennePayload.getBuffer();
 
-            scheduleUplink(fPort, payloadBuffer, payloadLength);
+            scheduleUplink(fPort, dataBuffer, payloadLength);
         }
     }
 }    
@@ -896,8 +924,13 @@ void setup()
     axp.setPowerOutPut(AXP192_EXTEN, AXP202_ON);
     axp.setPowerOutPut(AXP192_DCDC1, AXP202_ON);
     GPS.begin(9600, SERIAL_8N1, 34, 12);   //17-TX 18-RX
+    #ifdef USE_HARD_CODE_GPS
+        uint8_t cursor = dataCayennePayload.addGPS(1, locationData[0], locationData[1], 0);
+    #endif
+
     //---------------------------------------------------
     resetCounter();
+    
 
 //  █ █ █▀▀ █▀▀ █▀▄   █▀▀ █▀█ █▀▄ █▀▀   █▀▀ █▀█ █▀▄
 //  █ █ ▀▀█ █▀▀ █▀▄   █   █ █ █ █ █▀▀   █▀▀ █ █ █ █
@@ -915,5 +948,6 @@ void setup()
 
 void loop() 
 {
+    // getDeviceLocation(locationData);
     os_runloop_once();
 }
