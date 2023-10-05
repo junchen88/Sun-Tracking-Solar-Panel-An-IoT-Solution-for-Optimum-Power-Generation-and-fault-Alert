@@ -39,7 +39,7 @@
  * 
  */
 
-// testing payload (to use in TTN console): 01780101670001018806765FF2960A0003E801800100018E0101650101026501010365010104650101
+// testing payload (to use in TTN console): 01780101670001018806765FF2960A0003E801800100018E0101650101026501010284001001840000
 
 // lppDecode decodes an array of bytes into an array of ojects, 
 // each one with the channel, the data type and the value.
@@ -156,16 +156,35 @@ function lppDecode(bytes) {
 //converts data into thingspeak format
 function convertToThingSpeakFormat(data){
   
+  var declination = data.direction_1; //declination: we want: % 0 (horizontal) … 90 (vertical); integer
+  var azimuth = data.direction_2; //azimuth: we want: % -180 … 180 (-180 = north, -90 = east, 0 = south, 90 = west, 180 = north); integer
+                            //data is unsigned, so we need to convert 0-360
+                            //to -180 to 180 here
+  
+  // map value from any value to 0 - 360
+  azimuth = azimuth % 360;
+  
+  // map value from 0-360 to -180 to 180
+  if (azimuth > 180) {
+    azimuth = azimuth - 360;
+  }
+
+  // not valid result
+  if (declination > 90 || declination < 0){
+    declination = null;
+  }
+
   return{
     field1: data.temperature_1, //solar panel temperature
     field2: data.power_1,     //solar power output
     field3: data.percentage_1, //battery level
-    field4: data.switch_1,
-    field5: data.illuminance_1,
-    field6: data.illuminance_2,
-    field7: data.illuminance_3,
-    field8: data.illuminance_4,
-  
+    field4: null , // current?, calc estimate time in ThingSpeak?
+    field5: data.illuminance_1, // top 
+    field6: data.illuminance_2, // right
+    // field7: data.illuminance_3,
+    // field8: data.illuminance_4,
+    field7: declination, 
+    field8: azimuth, 
     latitude: data.gps_1.latitude,
     longitude: data.gps_1.longitude,
     elevation: data.gps_1.altitude,

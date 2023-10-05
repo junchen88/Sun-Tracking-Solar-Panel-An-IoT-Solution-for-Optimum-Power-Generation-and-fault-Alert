@@ -57,10 +57,12 @@
 //  █ █ ▀▀█ █▀▀ █▀▄   █   █ █ █ █ █▀▀   █▀▄ █▀▀ █ █  █  █ █
 //  ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀   ▀▀▀ ▀▀▀ ▀▀  ▀▀▀   ▀▀  ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀
 #include <TinyGPS++.h>
-#include <axp20x.h>
 #include <CayenneLPP.h>
+#include "../battery-information/battery.h"
 
-
+// NOTE: The device used for this project is TTGO T-beam v1.1 with axp192 power management chip
+// It uses Samsung ICR18650-26j battery (2600mah) - looking at the datasheet: https://www.litechpower.com/htmledit/uploadfiles//20210806203617959.pdf
+// cutoff discharge is 2.75V, but 3.0V is the better value, max voltage is 4.2+-0.5V
 //GPS--------------------
 TinyGPSPlus gps;
 HardwareSerial GPS(1);
@@ -767,6 +769,95 @@ void getDeviceLocation(float locationData[]){
 
 
 
+// function to get the illuminance from the light sensor and prints it out.
+// @return illuminance: the 4 illuminous value from the 4 light sensors (lux)
+uint32_t *readIlluminance(){
+    uint32_t illuminance[4];
+    
+    return illuminance;
+}
+
+void resetPanelPosition(){
+
+}
+
+void adjustPanelPosition(uint32_t *illuminanceValues){
+
+}
+
+// function to get the live current consumption rate and print it out.
+// If the battery is connected, then use the getBattDischargeCurrent()
+// function, else, use getVbusCurrent()
+// @return currentRate: the live current rate in mA
+float getCurrentRate(){
+
+    float currentRate = 0;
+    if(axp.isBatteryConnect()){
+        ostime_t timestamp = os_getTime();
+
+        printEvent(timestamp, "Battery is connected:", PrintTarget::Serial);
+
+        currentRate = axp.getBattDischargeCurrent();
+    }
+    else{
+        ostime_t timestamp = os_getTime();
+
+        printEvent(timestamp, "Battery is not connected:", PrintTarget::Serial);
+
+        currentRate = axp.getVbusCurrent(); // doesn't seems to be working - gives me 0.00A
+    }
+
+    ostime_t timestamp = os_getTime();
+    printEvent(timestamp, "Discharge:", PrintTarget::Serial);
+    printSpaces(serial, MESSAGE_INDENT);
+    serial.print(currentRate);
+    serial.println(" mA");
+    return currentRate;
+}
+
+// function to get the current battery level in percentage % and prints it.
+// If battery is connected, then use the getBattVoltage() and map it to %
+// else print NA for not connected
+// @return percentage: the current battery level in %, -100 if
+// battery is not connected
+int getBatteryLevel(){
+    if(axp.isBatteryConnect()){
+        // int percentage = axp.getBattPercentage(); - doesn't work for some reason - only work for axp202 after checking doc
+        float voltage = axp.getBattVoltage()/1000;
+        int percentage = estimateBatteryPercentage(voltage);
+        ostime_t timestamp = os_getTime();
+        printEvent(timestamp, "Battery percentage:", PrintTarget::Serial);
+        printSpaces(serial, MESSAGE_INDENT);
+        serial.print(percentage);
+        serial.println(" %");
+        return percentage;
+    }
+    else{
+        ostime_t timestamp = os_getTime();
+        printEvent(timestamp, "Battery percentage:", PrintTarget::Serial);
+        printSpaces(serial, MESSAGE_INDENT);
+        serial.println("NA - not connected");
+        return -100;
+    }
+}
+
+float getInternalTemp(){
+
+    ostime_t timestamp = os_getTime();
+    float axpTemp = axp.getTemp();
+    printEvent(timestamp, "Battery percentage:", PrintTarget::Serial);
+    printSpaces(serial, MESSAGE_INDENT);
+    serial.print(axpTemp);
+    serial.println("");
+    return axpTemp;
+}
+
+void trackSun(){
+
+}
+
+
+
 void processWork(ostime_t doWorkJobTimeStamp)
 {
     // This function is called from the doWorkCallback() 
@@ -781,6 +872,17 @@ void processWork(ostime_t doWorkJobTimeStamp)
     // Skip processWork if using OTAA and still joining.
     if (LMIC.devaddr != 0)
     {
+        // reset buffer initally to get new data
+        dataCayennePayload.reset();
+        #ifdef USE_HARD_CODE_GPS
+            dataCayennePayload.addGPS(1, locationData[0], locationData[1], 0);
+        #endif
+        uint32_t percentage = getBatteryLevel();
+        if(percentage < 0){
+            percentage = 0;
+        }
+        dataCayennePayload.addPercentage(1, percentage);
+
         // Collect input data.
         // For simplicity LMIC-node uses a counter to simulate a sensor. 
         // The counter is increased automatically by getCounterValue()
@@ -860,7 +962,8 @@ void processDownlink(ostime_t txCompleteTimestamp, uint8_t fPort, uint8_t* data,
         #endif
         ostime_t timestamp = os_getTime();
         resetCounter();
-        printEvent(timestamp, "Counter reset", PrintTarget::All, false);
+        resetPanelPosition();
+        printEvent(timestamp, "Reset event", PrintTarget::All, false);
     }          
 }
 
@@ -911,22 +1014,25 @@ void setup()
 
     // Place code for initializing sensors etc. here.
 
-    //GPS Init----------------------------------------
-    Wire.begin(21, 22);
-    if (!axp.begin(Wire, AXP192_SLAVE_ADDRESS)) {
-        serial.println("AXP192 Begin PASS");
-    } else {
-        serial.println("AXP192 Begin FAIL");
-    }
-    axp.setPowerOutPut(AXP192_LDO2, AXP202_ON);
-    axp.setPowerOutPut(AXP192_LDO3, AXP202_ON);
-    axp.setPowerOutPut(AXP192_DCDC2, AXP202_ON);
-    axp.setPowerOutPut(AXP192_EXTEN, AXP202_ON);
-    axp.setPowerOutPut(AXP192_DCDC1, AXP202_ON);
-    GPS.begin(9600, SERIAL_8N1, 34, 12);   //17-TX 18-RX
-    #ifdef USE_HARD_CODE_GPS
-        uint8_t cursor = dataCayennePayload.addGPS(1, locationData[0], locationData[1], 0);
-    #endif
+    //if not using hard-code gps location
+    #ifndef USE_HARD_CODE_GPS
+        //GPS Init----------------------------------------
+        Wire.begin(21, 22);
+        if (!axp.begin(Wire, AXP192_SLAVE_ADDRESS)) {
+            serial.println("AXP192 Begin PASS");
+        } else {
+            serial.println("AXP192 Begin FAIL");
+        }
+        axp.setPowerOutPut(AXP192_LDO2, AXP202_ON);
+        axp.setPowerOutPut(AXP192_LDO3, AXP202_ON);
+        axp.setPowerOutPut(AXP192_DCDC2, AXP202_ON);
+        axp.setPowerOutPut(AXP192_EXTEN, AXP202_ON);
+        axp.setPowerOutPut(AXP192_DCDC1, AXP202_ON);
+        GPS.begin(9600, SERIAL_8N1, 34, 12);   //17-TX 18-RX
+    # endif
+    // #ifdef USE_HARD_CODE_GPS
+    //     uint8_t cursor = dataCayennePayload.addGPS(1, locationData[0], locationData[1], 0);
+    // #endif
 
     //---------------------------------------------------
     resetCounter();
@@ -949,5 +1055,9 @@ void setup()
 void loop() 
 {
     // getDeviceLocation(locationData);
+    // getInternalTemp();
     os_runloop_once();
+    // getCurrentRate();
+    // getBatteryLevel();
+
 }
