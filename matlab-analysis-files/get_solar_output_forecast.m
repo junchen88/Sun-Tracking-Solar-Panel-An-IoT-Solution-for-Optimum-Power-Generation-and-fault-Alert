@@ -5,19 +5,18 @@
 % Scrape a website to obtain the solar production forecast data so we can use it later
 % for our alert system
 
-% replace [] with your own values due to privacy
 
 % Specify what channel do we read our gps from
-readChannelID = [];
-readAPIKey = [];
+readChannelID = 2273407;
+readAPIKey = 'EVY8X67UC7FHYJNK';
 
 
 writeAPIKey = []; %additional channel to store the average data
                                   %as we might need this data in the future for analysis
-writeChannelID = [];
+writeChannelID = 2295027;
 
 % Firstly, we need to obtain the required information for the api call
-channelSettingURL = 'https://api.thingspeak.com/channels/'+ readChannelID +'.json';
+channelSettingURL = 'https://api.thingspeak.com/channels/2273407.json';
 response = webread(channelSettingURL);
 
 data = thingSpeakRead(readChannelID, 'ReadKey', readAPIKey, 'numpoints',1, Location=1, OutputFormat='TimeTable');
@@ -25,10 +24,13 @@ latitude = string(data.Latitude);
 longitude = string(data.Longitude);
 elevation = string(data.Altitude);
 
+% for testing when GPS is not working
+% latitude = "-31.9789";
+% longitude = "115.8181";
 
-declination = string(data.Declination) % 0 (horizontal) … 90 (vertical); integer
+declination = "0"; % 0 (horizontal) … 90 (vertical); integer
 
-azimuth = string(data.Azimuth) % -180 … 180 (-180 = north, -90 = east, 0 = south, 90 = west, 180 = north); integer
+azimuth = "0"; % -180 … 180 (-180 = north, -90 = east, 0 = south, 90 = west, 180 = north); integer
 
 % TODO add the solar panel power
 solarPowerKW = 0.005; %5W solar panel
@@ -38,9 +40,28 @@ url = 'https://api.forecast.solar/estimate/'+latitude+'/'+longitude+'/'+declinat
 
 % Fetch forecast data
 webText = webread(url);
-display(webText)
 
-% Write the temperature data to another channel specified by the
+timezone = webText.message.info.timezone;
+
+newDatetime = datetime(webText.message.info.time, 'InputFormat', 'yyyy-MM-dd''T''HH:mm:ssXXXXXX', 'Format', 'yyyy-MM-dd HH:mm:ss', 'TimeZone', timezone);
+currentDay = newDatetime.Day;
+
+% obtain json key names
+keys = fieldnames(webText.result.watts);
+
+% remove x from the name and convert them to datetimes
+timestamps = datetime(strrep(keys,'x',''), 'InputFormat', 'yyyy_MM_ddHH_mm_ss', 'Format', 'yyyy-MM-dd HH:mm:ss', 'TimeZone', timezone);
+
+% get the values and transpose to 2x1
+values = struct2array(webText.result.watts).';
+
+% create a table
+t = table(timestamps, values);
+display(t);
+
+% filter the table to only keep current day data
+filteredTable = t(day(t.timestamps) == currentDay, :);
+
+% Write the filtered table to another channel specified by the
 % 'writeChannelID' variable
-
-thingSpeakWrite(writeChannelID, webText.result.watts, 'WriteKey', writeAPIKey);
+thingSpeakWrite(writeChannelID, filteredTable, 'WriteKey', writeAPIKey,'Fields',[1]);
