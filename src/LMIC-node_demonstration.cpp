@@ -65,11 +65,7 @@
 //#include <Dusk2Dawn.h>
 #include "SparkFun_VEML6030_Ambient_Light_Sensor.h"
 #include "Wire.h"
-#include "DFRobot_INA219.h"
 #include "../battery-information/battery.h"
-
-#include <WiFi.h>
-#include <esp_sleep.h>
 
 // NOTE: The device used for this project is TTGO T-beam v1.1 with axp192 power management chip
 // It uses Samsung ICR18650-26j battery (2600mah) - looking at the datasheet: https://www.litechpower.com/htmledit/uploadfiles//20210806203617959.pdf
@@ -77,7 +73,7 @@
 //Servo--------------------
 // Recommended PWM GPIO pins on the ESP32 include 2,4,12-19,21-23,25-27,32-33 
 #define SERVOPINH  32  //Horizontal
-#define SERVOPINV  33  //Vertical
+#define SERVOPINV  2  //Vertical
 Servo ServoH;         //Horizontal
 Servo ServoV;         //Vertical
 struct SER {
@@ -105,27 +101,10 @@ HardwareSerial GPS(1);
 #else
     float locationData[2];
 #endif
-
-struct GPSData {
-    double lat;
-    double lng;
-    int Year;
-    int Month;
-    int Day;
-    int Hour;
-    int Min;
-    int Sec;
-};
-GPSData gpsdata;
-
-int dayofmonth[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
-double sunPosition[2] = {0,0};
-
 int sunrise = 0;
 int sunset = 0;
-
 //VEML6030--------------------
-#define tol             100      
+#define tol             10      
 //Tracking of the target, when the difference in readings from neighbouring sensors is less than this value, 
 //the tracking is considered successful, and should not be too small, as it is prone to jittering
 #define SensorLeftTopAddr  0x48  //I2Cone
@@ -134,7 +113,6 @@ int sunset = 0;
 #define SensorRightBottomAddr  0x10 //I2Ctwo
 #define DeltaMax               10000
 #define CountMin               3
-#define POWERSAVINGMODE         4    // level is 1-4
 SparkFun_Ambient_Light lightLeftTop(SensorLeftTopAddr);
 SparkFun_Ambient_Light lightRightTop(SensorRightTopAddr);
 SparkFun_Ambient_Light lightLeftBottom(SensorLeftBottomAddr);
@@ -151,47 +129,32 @@ float sensorgain = .125;
 int integTime = 100;
 //------------------------
 
-
-/*!
-   file getVoltageCurrentPower.ino
-   SEN0291 Gravity: I2C Digital Wattmeter
-   The module is connected in series between the power supply and the load to read the voltage, current and power
-   The module has four I2C, these addresses are:
-   INA219_I2C_ADDRESS1  0x40   A0 = 0  A1 = 0
-   INA219_I2C_ADDRESS2  0x41   A0 = 1  A1 = 0
-   INA219_I2C_ADDRESS3  0x44   A0 = 0  A1 = 1
-   INA219_I2C_ADDRESS4  0x45   A0 = 1  A1 = 1
-
-   Copyright    [DFRobot](https://www.dfrobot.com), 2016
-   Copyright    GNU Lesser General Public License
-   version  V0.1
-   date  2019-2-27
-*/
-DFRobot_INA219_IIC     ina219(&Wire, INA219_I2C_ADDRESS4);
-
-
-// Revise the following two paramters according to actula reading of the INA219 and the multimeter
-// for linearly calibration
-float ina219Reading_mA = 1000;
-float extMeterReading_mA = 1000;
-
-
+bool isNewDay = true;
 bool hasGPSReceivedData = false;
 
 const uint8_t payloadBufferLength = 45;    // Adjust to fit max payload length
 
 CayenneLPP dataCayennePayload(payloadBufferLength);
 
-
-#define SECTOMICROSECFACTOR 1000000
-
-
-
+struct GPSData {
+    double lat;
+    double lng;
+    int Year;
+    int Month;
+    int Day;
+    int Hour;
+    int Min;
+    int Sec;
+};
+GPSData gpsdata;
+int dayofmonth[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+double sunPosition[2] = {0,0};
 //  █ █ █▀▀ █▀▀ █▀▄   █▀▀ █▀█ █▀▄ █▀▀   █▀▀ █▀█ █▀▄
 //  █ █ ▀▀█ █▀▀ █▀▄   █   █ █ █ █ █▀▀   █▀▀ █ █ █ █
 //  ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀   ▀▀▀ ▀▀▀ ▀▀  ▀▀▀   ▀▀▀ ▀ ▀ ▀▀ 
 
 
+uint8_t payloadBuffer[payloadBufferLength];
 static osjob_t doWorkJob;
 uint32_t doWorkIntervalSeconds = DO_WORK_INTERVAL_SECONDS;  // Change value in platformio.ini
 
@@ -816,20 +779,26 @@ lmic_tx_error_t scheduleUplink(uint8_t fPort, uint8_t* data, uint8_t dataLength,
 //  ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀   ▀▀▀ ▀▀▀ ▀▀  ▀▀▀   ▀▀  ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀
 
 
+static volatile uint16_t counter_ = 0;
+
+uint16_t getCounterValue()
+{
+    // Increments counter and returns the new value.
+    delay(50);         // Fake this takes some time
+    return ++counter_;
+}
+
+void resetCounter()
+{
+    // Reset counter to 0
+    counter_ = 0;
+}
+
+
 void initLightSensor(){
     Wire.begin(21,22);
     Wire1.begin(14,13);
-
     if(lightLeftTop.begin(Wire)){
-        
-        //power saving mode
-        lightLeftTop.setPowSavMode(POWERSAVINGMODE);
-        serial.print("Power Save Mode: "); 
-        int savVal = lightLeftTop.readPowSavMode();
-        serial.println(savVal);
-        lightLeftTop.enablePowSave();
-
-
         Serial.println("Ready to sense some lightLeftTop!"); 
         lightLeftTop.setGain(sensorgain);
         lightLeftTop.setIntegTime(integTime);
@@ -845,11 +814,6 @@ void initLightSensor(){
         Serial.println("Could not communicate with the sensorLeft!");
     }
     if(lightRightTop.begin(Wire)){
-        
-        lightRightTop.setPowSavMode(POWERSAVINGMODE);
-        lightRightTop.enablePowSave();
-
-
         Serial.println("Ready to sense some lightRightTop!"); 
         lightRightTop.setGain(sensorgain);
         lightRightTop.setIntegTime(integTime);
@@ -865,11 +829,6 @@ void initLightSensor(){
         Serial.println("Could not communicate with the sensorRight!");
     }
     if(lightLeftBottom.begin(Wire1)){
-        
-        lightLeftBottom.setPowSavMode(POWERSAVINGMODE);
-        lightLeftBottom.enablePowSave();
-
-
         Serial.println("Ready to sense some lightLeftBottom!"); 
         lightLeftBottom.setGain(sensorgain);
         lightLeftBottom.setIntegTime(integTime);
@@ -885,10 +844,6 @@ void initLightSensor(){
         Serial.println("Could not communicate with the sensorTop!");
     }
     if(lightRightBottom.begin(Wire1)){
-        
-        lightRightBottom.setPowSavMode(POWERSAVINGMODE);
-        lightRightBottom.enablePowSave();
-
         Serial.println("Ready to sense some lightRightBottom!"); 
         lightRightBottom.setGain(sensorgain);
         lightRightBottom.setIntegTime(integTime);
@@ -904,39 +859,6 @@ void initLightSensor(){
         Serial.println("Could not communicate with the sensorBottom!");
     }
 }
-
-
-
-
-void initDigitalWattMeter(void) 
-{
-    Serial.println();
-    while(ina219.begin() != true) {
-        Serial.println("INA219 begin faild");
-        delay(2000);
-    }
-    ina219.linearCalibrate(ina219Reading_mA, extMeterReading_mA);
-    Serial.println();
-}
-
-// comment out/delete once finished
-void testDigitalWattMeter(void){
-    Serial.print("BusVoltage:   ");
-    Serial.print(ina219.getBusVoltage_V(), 2);
-    Serial.println("V");
-    Serial.print("ShuntVoltage: ");
-    Serial.print(ina219.getShuntVoltage_mV(), 3);
-    Serial.println("mV");
-    Serial.print("Current:      ");
-    Serial.print(ina219.getCurrent_mA(), 1);
-    Serial.println("mA");
-    Serial.print("Power:        ");
-    Serial.print(ina219.getPower_mW(), 1);
-    Serial.println("mW");
-    Serial.println("");
-    delay(5000);
-}
-
 void readIlluminance(){
     static unsigned long timer1;
     if (millis() - timer1 >= 100){
@@ -1053,51 +975,7 @@ void testPanelDevice(){
         Count2--;
     }
 }
-
-// turnoff everything during deep sleep
-// see: https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/sleep_modes.html
-void deepSleep(){
-    WiFi.mode(WIFI_OFF);
-    delay(50);
-    btStop();
-    delay(50);
-    axp.setPowerOutPut(AXP192_LDO2, AXP202_ON); //lora
-    delay(50);
-    axp.setPowerOutPut(AXP192_LDO3, AXP202_OFF); //gps
-
-    // int seconds_to_sunrise = getTimeToSunrise();
-    esp_sleep_enable_timer_wakeup(10 * SECTOMICROSECFACTOR);
-
-    
-    // add wakeup RTC pin - connect button to this pin
-    esp_sleep_enable_ext0_wakeup(GPIO_NUM_25,1);
-
-    esp_deep_sleep_start(); //start deepsleep
-    
-}
-
-
-// Print wakeup reason
-// function obtained from ESP32 sketch file
-void print_wakeup_reason(){
-  esp_sleep_wakeup_cause_t wakeup_reason;
-
-  wakeup_reason = esp_sleep_get_wakeup_cause(); //get wakeup cause
-
-  switch(wakeup_reason)
-  {
-    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
-    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
-    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
-    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
-    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
-    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
-  }
-
-  delay(3000); //comment out once done
-}
-
-void resetPanelDevice(bool sleep){
+void resetPanelDevice(){
     int Count1;
     int Count2;
     bool flag1 = false;
@@ -1137,9 +1015,6 @@ void resetPanelDevice(bool sleep){
         ServoV.write(ser[1].servoA);
         delay(ser[1].dtime);
         Count2--;
-    }
-    if(sleep == true){
-        deepSleep();
     }
 }
 
@@ -1191,7 +1066,6 @@ void calculateSunPos(){
     Serial.print(F("azimuth: "));
     Serial.println(angleAs,2);
 }
-
 void calculateServoandSun(){
     if (trackflagH == true && trackflagV == true){
               
@@ -1216,7 +1090,6 @@ void calculateServoandSun(){
     }
 }
 void trackSun(){ //AOA
-
     //illuminance[0]LeftTop [1]RightTop [2]LeftBottom [3]RightBottom
     float avt = (illuminance[0].old   + illuminance[1].old) / 2.0;
     float avd = (illuminance[2].old   + illuminance[3].old) / 2.0;
@@ -1224,84 +1097,54 @@ void trackSun(){ //AOA
     float avr = (illuminance[1].old   + illuminance[3].old) / 2.0;//Neighbouring readings averaged
     float dvert  = avt - avd;                             //Top and Bottom average
     float dhoriz = avl - avr; 
-    
-    if (abs(dvert) > tol){
-        trackflagV = false;
-    }
-
-    if (abs(dhoriz) > tol){
-        trackflagH = false;
-    }
-
-    // continue to move the servo until the light sensors value
-    // is within the threshold
-    while (trackflagV != true && trackflagH != true)
-    {
-        //illuminance[0]LeftTop [1]RightTop [2]LeftBottom [3]RightBottom
-        //get most recent sensor values
-        avt = (illuminance[0].old   + illuminance[1].old) / 2.0;
-        avd = (illuminance[2].old   + illuminance[3].old) / 2.0;
-        avl = (illuminance[0].old   + illuminance[2].old) / 2.0;
-        avr = (illuminance[1].old   + illuminance[3].old) / 2.0;//Neighbouring readings averaged
-        dvert  = avt - avd;                             //Top and Bottom average
-        dhoriz = avl - avr; 
-        if (abs(dvert) > tol) {//When Light sensor reading average Top > Bottom
-        
-                trackflagV = false;
-
-            if (avt > avd) {                  
-                ser[1].servoA -= ser[1].angleAmount;
-                if (ser[1].servoA < ser[1].LimitLow) {
-                ser[1].servoA = ser[1].LimitLow;
-                }
-                ServoV.write(ser[1].servoA);
-                delay(ser[1].dtime);
+    if (abs(dvert) > tol) {//When Light sensor reading average Top > Bottom
+        if (avt > avd) {                  
+            ser[1].servoA -= ser[1].angleAmount;
+            if (ser[1].servoA < ser[1].LimitLow) {
+            ser[1].servoA = ser[1].LimitLow;
             }
-            else if (avt < avd) {
-                ser[1].servoA += ser[1].angleAmount;    
-                if (ser[1].servoA > ser[1].LimitHigh) {
-                ser[1].servoA = ser[1].LimitHigh;
-                }
-                ServoV.write(ser[1].servoA);
-                delay(ser[1].dtime);
-            }
-            Serial.print(F("Now ServoV Position is: "));
-            Serial.println(ser[1].servoA);
-        } else {
-            trackflagV = true;
-            Serial.println(F("ServoV Track finish"));
+            ServoV.write(ser[1].servoA);
+            delay(ser[1].dtime);
         }
-        if (abs(dhoriz) > tol) {
-            
-                trackflagH = false;
-
-
-            if (avl < avr) {                            //When Light sensor reading average Left > Right
-                ser[0].servoA += ser[0].angleAmount;
-                if (ser[0].servoA > ser[0].LimitHigh) {
-                ser[0].servoA = ser[0].LimitHigh;
-                }
-                ServoH.write(ser[0].servoA);
-                delay(ser[0].dtime);
+        else if (avt < avd) {
+            ser[1].servoA += ser[1].angleAmount;    
+            if (ser[1].servoA > ser[1].LimitHigh) {
+            ser[1].servoA = ser[1].LimitHigh;
             }
-            else if (avl > avr) {
-                ser[0].servoA -= ser[0].angleAmount;  
-                if (ser[0].servoA < ser[0].LimitLow) {
-                ser[0].servoA = ser[0].LimitLow;       
-                }
-                ServoH.write(ser[0].servoA);
-                delay(ser[0].dtime);                
-            }
-            Serial.print(F("Now ServoH Position is: "));
-            Serial.println(ser[0].servoA);
-        } else {
-            trackflagH = true;
-            Serial.println(F("ServoH Track finish"));
+            ServoV.write(ser[1].servoA);
+            delay(ser[1].dtime);
         }
+        Serial.print(F("Now ServoV Position is: "));
+        Serial.println(ser[1].servoA);
+    } else {
+        trackflagV = true;
+        Serial.println(F("ServoV Track finish"));
+    }
+    if (abs(dhoriz) > tol) {
+        if (avl < avr) {                            //When Light sensor reading average Left > Right
+            ser[0].servoA += ser[0].angleAmount;
+            if (ser[0].servoA > ser[0].LimitHigh) {
+            ser[0].servoA = ser[0].LimitHigh;
+            }
+            ServoH.write(ser[0].servoA);
+            delay(ser[0].dtime);
+        }
+        else if (avl > avr) {
+            ser[0].servoA -= ser[0].angleAmount;  
+            if (ser[0].servoA < ser[0].LimitLow) {
+            ser[0].servoA = ser[0].LimitLow;       
+            }
+            ServoH.write(ser[0].servoA);
+            delay(ser[0].dtime);                
+        }
+        Serial.print(F("Now ServoH Position is: "));
+        Serial.println(ser[0].servoA);
+    } else {
+        trackflagH = true;
+        Serial.println(F("ServoH Track finish"));
     }
     calculateServoandSun();
 }
-
 static void smartDelay(unsigned long ms)
 {
   unsigned long start = millis();
@@ -1412,16 +1255,9 @@ void getDeviceLocation(){
 }
 
 // function to get the illuminance from the light sensor and prints it out.
-// @return avgIlluminance: the average illuminance of the 4 light sensors (lux)
-float getIlluminanceAvg(){
-    float sum = 0;
-    float avgIlluminance = 0;
-    for(int i = 0; i < 4; i++){
-        sum += illuminance[i].old;
-    }
-    avgIlluminance = sum/4;
-    return avgIlluminance;
-}
+// @return illuminance: the 4 illuminous value from the 4 light sensors (lux)
+// [0] lefttop [1] righttop [2] leftbottom [3] rightbottom
+
 
 
 // function to get the live current consumption rate and print it out.
@@ -1484,35 +1320,13 @@ float getInternalTemp(){
 
     ostime_t timestamp = os_getTime();
     float axpTemp = axp.getTemp();
-    printEvent(timestamp, "Board's temperature:", PrintTarget::Serial);
+    printEvent(timestamp, "Battery percentage:", PrintTarget::Serial);
     printSpaces(serial, MESSAGE_INDENT);
     serial.print(axpTemp);
-    serial.println(" degree");
+    serial.println("");
     return axpTemp;
 }
 
-float getPanelCurrent(){
-    float current = ina219.getCurrent_mA();
-    ostime_t timestamp = os_getTime();
-    printEvent(timestamp, "Panel's current:", PrintTarget::Serial);
-    printSpaces(serial, MESSAGE_INDENT);
-    serial.print(current);
-    serial.println(" mA");
-    return current;
-}
-
-float getBattChargePower(){
-    float power = ina219.getPower_mW();
-    float morePrecisePower = ina219.getBusVoltage_V() * ina219.getCurrent_mA();
-
-    ostime_t timestamp = os_getTime();
-    printEvent(timestamp, "Solar panel power:", PrintTarget::Serial);
-    printSpaces(serial, MESSAGE_INDENT);
-    serial.print(power);
-    serial.println(" mW");
-
-    return power;
-}
 
 
 
@@ -1530,63 +1344,44 @@ void processWork(ostime_t doWorkJobTimeStamp)
     // Skip processWork if using OTAA and still joining.
     if (LMIC.devaddr != 0)
     {
-        getDeviceLocation();
-        
-        if(resetflag == true){
-            readIlluminance();
-            trackSun();
-        }
-
         // reset buffer initally to get new data
         dataCayennePayload.reset();
-       
-        // Collect input data
-        // add gps data to buffer
-
-        dataCayennePayload.addGPS(1, gpsdata.lat, gpsdata.lng, 0);
-
-        // add board's temperature
-        dataCayennePayload.addTemperature(1, getInternalTemp());
-
-        // add charging power
-        dataCayennePayload.addPower(1, getBattChargePower());
-
-        // add battery level to buffer
+        #ifdef USE_HARD_CODE_GPS
+            dataCayennePayload.addGPS(1, locationData[0], locationData[1], 0);
+        #endif
         uint32_t percentage = getBatteryLevel();
         if(percentage < 0){
             percentage = 0;
         }
         dataCayennePayload.addPercentage(1, percentage);
 
-       // add average illuminance
-        float illuminanceAvg = getIlluminanceAvg();
-        if(illuminanceAvg < 0){
-            illuminanceAvg = 0;
-        }
-        dataCayennePayload.addLuminosity(1, illuminanceAvg);
+        // Collect input data.
+        // For simplicity LMIC-node uses a counter to simulate a sensor. 
+        // The counter is increased automatically by getCounterValue()
+        // and can be reset with a 'reset counter' command downlink message.
 
-        // add charge current
-        float chargeCurrent = getPanelCurrent();
-        if(chargeCurrent < 100){
-            chargeCurrent = 0;
-        }
-        dataCayennePayload.addCurrent(1, chargeCurrent);
-
-        // add battery voltage - related to the batt level
-        float voltage = axp.getBattVoltage();
-        dataCayennePayload.addVoltage(1, voltage);
-
-        // add sunrise - need to be in Unix Time, which is seconds
-        // it is in minutes, so we need to convert it
-        // dataCayennePayload.addUnixTime(1, sunrise*60);
-
-        // // add sunset
-        // dataCayennePayload.addUnixTime(2, sunrise*60);
-
-
+        uint16_t counterValue = getCounterValue();
         ostime_t timestamp = os_getTime();
         // getDeviceLocation(locationData);
         
+        #ifdef USE_DISPLAY
+            // Interval and Counter values are combined on a single row.
+            // This allows to keep the 3rd row empty which makes the
+            // information better readable on the small display.
+            display.clearLine(INTERVAL_ROW);
+            display.setCursor(COL_0, INTERVAL_ROW);
+            display.print("I:");
+            display.print(doWorkIntervalSeconds);
+            display.print("s");        
+            display.print(" Ctr:");
+            display.print(counterValue);
+        #endif
+        #ifdef USE_SERIAL
+            printEvent(timestamp, "Input data collected", PrintTarget::Serial);
+            printSpaces(serial, MESSAGE_INDENT);
+            serial.print(F("COUNTER value: "));
+            serial.println(counterValue);
+        #endif    
 
         // For simplicity LMIC-node will try to send an uplink
         // message every time processWork() is executed.
@@ -1608,7 +1403,8 @@ void processWork(ostime_t doWorkJobTimeStamp)
 
             // Prepare uplink payload.
             uint8_t fPort = 10;
-           
+            payloadBuffer[0] = counterValue >> 8;
+            payloadBuffer[1] = counterValue & 0xFF;
             uint8_t payloadLength = dataCayennePayload.getSize();
             uint8_t *dataBuffer = dataCayennePayload.getBuffer();
 
@@ -1623,20 +1419,22 @@ void processDownlink(ostime_t txCompleteTimestamp, uint8_t fPort, uint8_t* data,
     // This function is called from the onEvent() event handler
     // on EV_TXCOMPLETE when a downlink message was received.
 
- // Resets solar panel position when received the command
+    // Implements a 'reset counter' command that can be sent via a downlink message.
+    // To send the reset counter command to the node, send a downlink message
+    // (e.g. from the TTN Console) with single byte value resetCmd on port cmdPort.
 
-    const uint8_t cmdPort = 15;
-    const uint8_t resetCmd= 0x0018; //reset command = 0x18
+    const uint8_t cmdPort = 100;
+    const uint8_t resetCmd= 0xC0;
 
-    if (fPort == cmdPort && dataLength <= 2 && data[0] == resetCmd)
+    if (fPort == cmdPort && dataLength == 1 && data[0] == resetCmd)
     {
         #ifdef USE_SERIAL
             printSpaces(serial, MESSAGE_INDENT);
             serial.println(F("Reset cmd received"));
         #endif
         ostime_t timestamp = os_getTime();
+        resetCounter();
         printEvent(timestamp, "Reset event", PrintTarget::All, false);
-        resetPanelDevice(true);
     }          
 }
 
@@ -1685,15 +1483,10 @@ void setup()
 //  █ █ ▀▀█ █▀▀ █▀▄   █   █ █ █ █ █▀▀   █▀▄ █▀▀ █ █  █  █ █
 //  ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀   ▀▀▀ ▀▀▀ ▀▀  ▀▀▀   ▀▀  ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀
 
-    print_wakeup_reason();
-
     // Place code for initializing sensors etc. here.
     initLightSensor();
     initPanelDevice();
-    initDigitalWattMeter();
-
-    testDigitalWattMeter();
-
+    //if not using hard-code gps location
     #ifdef USE_HARD_CODE_GPS
         //GPS Init----------------------------------------
         Wire.begin(21,22);
@@ -1714,9 +1507,10 @@ void setup()
     // #endif
 
     //---------------------------------------------------
+    resetCounter();
     readIlluminance();
     testPanelDevice();
-    resetPanelDevice(false); //false means do not deep sleep
+    resetPanelDevice();
 //  █ █ █▀▀ █▀▀ █▀▄   █▀▀ █▀█ █▀▄ █▀▀   █▀▀ █▀█ █▀▄
 //  █ █ ▀▀█ █▀▀ █▀▄   █   █ █ █ █ █▀▀   █▀▀ █ █ █ █
 //  ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀   ▀▀▀ ▀▀▀ ▀▀  ▀▀▀   ▀▀▀ ▀ ▀ ▀▀ 
@@ -1733,10 +1527,10 @@ void setup()
 
 void loop() 
 {
-    // getDeviceLocation();
-    // readIlluminance();
+    getDeviceLocation();
+    readIlluminance();
 
-    // trackSun();
+    trackSun();
     // getInternalTemp();
     os_runloop_once();
     // getCurrentRate();
