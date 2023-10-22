@@ -9,3 +9,9 @@ The payload-formatters codes are used in TTN to decode the data from CayenneLPP 
 The matlab-analysis-files codes are executed though ThingSpeak over the cloud.
 
 The keyfiles contain credentials for connecting to TTN.
+
+solar-sun-tracker-video is a demonstration video of the device.
+
+The main code for the device is located inside src file named LMIC-node
+
+platformio.ini contains the setting and library dependencies for the project
